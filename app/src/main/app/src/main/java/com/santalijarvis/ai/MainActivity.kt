@@ -235,13 +235,13 @@ suspend fun queryMasterAiEngine(
     return withContext(Dispatchers.IO) {
         try {
             val systemInstruction = """
-                You are SANTALI JARVIS AI, an elite, mastermind-level personal assistant inspired by Iron Man's JARVIS.
+                You are SANTALI JARVIS AI, an elite personal assistant inspired by Iron Man's JARVIS.
                 Primary Language: $preferredLang (Default is Santali).
                 Persona Directive: ${customPersona.ifBlank { "Address the user respectfully as Boss. Be sharp, intelligent, accurate, and natural." }}
                 Rules:
-                1. Reply primarily in $preferredLang. If $preferredLang is Santali, write natural, fluent Santali (Ol Chiki or clear Santali matching the user).
+                1. Reply primarily in $preferredLang. If $preferredLang is Santali, write natural, fluent Santali.
                 2. You seamlessly understand Santali, Bengali, Hindi, and English.
-                3. Keep answers structured, clear, and avoid excessive markdown asterisks (*) so human voice synthesis sounds natural.
+                3. Avoid excessive markdown asterisks (*) so voice synthesis sounds natural.
             """.trimIndent()
 
             val recentHistory = history.takeLast(8)
@@ -419,15 +419,17 @@ suspend fun synthesizeElevenLabsAudio(
 }
 
 fun saveChatHistory(prefs: android.content.SharedPreferences, messages: List<ChatMessage>) {
-    val arr = JSONArray()
-    messages.takeLast(50).forEach { msg ->
-        arr.put(JSONObject().apply {
-            put("text", msg.text)
-            put("isUser", msg.isUser)
-            put("headerTag", msg.headerTag)
-        })
-    }
-    prefs.edit().putString("saved_chat_history_v2", arr.toString()).apply()
+    try {
+        val arr = JSONArray()
+        messages.takeLast(50).forEach { msg ->
+            arr.put(JSONObject().apply {
+                put("text", msg.text)
+                put("isUser", msg.isUser)
+                put("headerTag", msg.headerTag)
+            })
+        }
+        prefs.edit().putString("saved_chat_history_v2", arr.toString()).apply()
+    } catch (_: Exception) {}
 }
 
 fun loadChatHistory(prefs: android.content.SharedPreferences, fallback: ChatMessage): List<ChatMessage> {
@@ -438,9 +440,9 @@ fun loadChatHistory(prefs: android.content.SharedPreferences, fallback: ChatMess
         else (0 until arr.length()).map { i ->
             val obj = arr.getJSONObject(i)
             ChatMessage(
-                text = obj.getString("text"),
-                isUser = obj.getBoolean("isUser"),
-                headerTag = obj.getString("headerTag")
+                text = obj.optString("text", ""),
+                isUser = obj.optBoolean("isUser", false),
+                headerTag = obj.optString("headerTag", "JARVIS")
             )
         }
     } catch (_: Exception) {
@@ -500,7 +502,9 @@ fun JarvisMastermindApp() {
             mediaPlayer?.release()
         } catch (_: Exception) {}
         mediaPlayer = null
-        tts?.stop()
+        try {
+            tts?.stop()
+        } catch (_: Exception) {}
         isSpeaking = false
     }
 
@@ -513,31 +517,40 @@ fun JarvisMastermindApp() {
         isListening = false
     }
 
-    lateinit var startListeningCycle: () -> Unit
+    var startListeningAction by remember { mutableStateOf<(() -> Unit)?>(null) }
 
     fun onVoiceFinishedCallback() {
         isSpeaking = false
         if (liveModeRef.value) {
             mainHandler.postDelayed({
-                if (liveModeRef.value) startListeningCycle()
+                if (liveModeRef.value) startListeningAction?.invoke()
             }, 450)
         }
     }
 
     fun fallbackDeviceTts(text: String) {
-        val locale = when (selectedLangRef.value) {
-            "Hindi" -> Locale("hi", "IN")
-            "English" -> Locale.US
-            else -> Locale("bn", "IN")
+        try {
+            val engine = tts
+            if (engine != null) {
+                val locale = when (selectedLangRef.value) {
+                    "Hindi" -> Locale("hi", "IN")
+                    "English" -> Locale.US
+                    else -> Locale("bn", "IN")
+                }
+                engine.language = locale
+                engine.speak(text.take(450), TextToSpeech.QUEUE_FLUSH, null, "jarvis_fallback_utt")
+            } else {
+                onVoiceFinishedCallback()
+            }
+        } catch (_: Exception) {
+            onVoiceFinishedCallback()
         }
-        tts?.language = locale
-        tts?.speak(text.take(450), TextToSpeech.QUEUE_FLUSH, null, "jarvis_fallback_utt")
     }
 
     fun speakHumanOrFallback(text: String, forceSpeak: Boolean = false) {
         if (!autoSpeak && !forceSpeak && !liveModeRef.value) {
             if (liveModeRef.value) {
-                mainHandler.postDelayed({ if (liveModeRef.value) startListeningCycle() }, 400)
+                mainHandler.postDelayed({ if (liveModeRef.value) startListeningAction?.invoke() }, 400)
             }
             return
         }
@@ -578,22 +591,29 @@ fun JarvisMastermindApp() {
 
     DisposableEffect(Unit) {
         var engine: TextToSpeech? = null
-        engine = TextToSpeech(context) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                engine?.language = Locale("bn", "IN")
-                engine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String?) { mainHandler.post { isSpeaking = true } }
-                    override fun onDone(utteranceId: String?) { mainHandler.post { onVoiceFinishedCallback() } }
-                    @Deprecated("Deprecated in Java")
-                    override fun onError(utteranceId: String?) { mainHandler.post { onVoiceFinishedCallback() } }
-                })
+        try {
+            engine = TextToSpeech(context.applicationContext) { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    try {
+                        engine?.language = Locale("bn", "IN")
+                        engine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                            override fun onStart(utteranceId: String?) { mainHandler.post { isSpeaking = true } }
+                            override fun onDone(utteranceId: String?) { mainHandler.post { onVoiceFinishedCallback() } }
+                            @Deprecated("Deprecated in Java")
+                            override fun onError(utteranceId: String?) { mainHandler.post { onVoiceFinishedCallback() } }
+                        })
+                    } catch (_: Exception) {}
+                }
             }
-        }
-        tts = engine
+            tts = engine
+        } catch (_: Exception) {}
+
         onDispose {
             stopRecognizer()
             stopAllAudio()
-            engine?.shutdown()
+            try {
+                engine?.shutdown()
+            } catch (_: Exception) {}
         }
     }
 
@@ -615,14 +635,18 @@ fun JarvisMastermindApp() {
         if (appendUserBubble) {
             messages = messages + ChatMessage(cleanText, isUser = true, headerTag = "OPERATOR")
             saveChatHistory(prefs, messages)
-            coroutineScope.launch { listState.animateScrollToItem(messages.size - 1) }
+            coroutineScope.launch {
+                try { listState.animateScrollToItem(messages.size - 1) } catch (_: Exception) {}
+            }
         }
 
         val deviceActionReply = handleDeviceCommandIfMatched(context, cleanText)
         if (deviceActionReply != null) {
             messages = messages + ChatMessage(deviceActionReply, isUser = false, headerTag = "JARVIS • DEVICE ACTION")
             saveChatHistory(prefs, messages)
-            coroutineScope.launch { listState.animateScrollToItem(messages.size - 1) }
+            coroutineScope.launch {
+                try { listState.animateScrollToItem(messages.size - 1) } catch (_: Exception) {}
+            }
             speakHumanOrFallback(deviceActionReply)
             return
         }
@@ -654,60 +678,67 @@ fun JarvisMastermindApp() {
                 headerTag = "${selectedProvider.badge} • ${selectedLangRef.value.uppercase()}$voiceBadge"
             )
             saveChatHistory(prefs, messages)
-            listState.animateScrollToItem(messages.size - 1)
+            try { listState.animateScrollToItem(messages.size - 1) } catch (_: Exception) {}
             speakHumanOrFallback(aiReply)
         }
     }
 
-    startListeningCycle = {
-        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
-            Toast.makeText(context, "Speech recognition unavailable", Toast.LENGTH_SHORT).show()
-            liveVoiceMode = false
-        } else {
-            stopRecognizer()
-            val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
-            activeRecognizer = recognizer
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                val langCode = when (selectedLangRef.value) {
-                    "Hindi" -> "hi-IN"
-                    "English" -> "en-IN"
-                    else -> "bn-IN"
+    LaunchedEffect(Unit) {
+        startListeningAction = {
+            try {
+                if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+                    Toast.makeText(context, "Speech recognition unavailable", Toast.LENGTH_SHORT).show()
+                    liveVoiceMode = false
+                } else {
+                    stopRecognizer()
+                    val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
+                    activeRecognizer = recognizer
+                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                        putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                        val langCode = when (selectedLangRef.value) {
+                            "Hindi" -> "hi-IN"
+                            "English" -> "en-IN"
+                            else -> "bn-IN"
+                        }
+                        putExtra(RecognizerIntent.EXTRA_LANGUAGE, langCode)
+                    }
+                    recognizer.setRecognitionListener(object : RecognitionListener {
+                        override fun onReadyForSpeech(params: Bundle?) {
+                            isListening = true
+                            livePartialText = ""
+                        }
+                        override fun onBeginningOfSpeech() {}
+                        override fun onRmsChanged(rmsdB: Float) {}
+                        override fun onBufferReceived(buffer: ByteArray?) {}
+                        override fun onEndOfSpeech() { isListening = false }
+                        override fun onError(error: Int) {
+                            isListening = false
+                            if (liveModeRef.value && !isThinking && !isSpeaking) {
+                                mainHandler.postDelayed({ if (liveModeRef.value) startListeningAction?.invoke() }, 700)
+                            }
+                        }
+                        override fun onResults(results: Bundle?) {
+                            isListening = false
+                            val spoken = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                            if (!spoken.isNullOrBlank()) {
+                                triggerSend(spoken)
+                            } else if (liveModeRef.value) {
+                                mainHandler.postDelayed({ if (liveModeRef.value) startListeningAction?.invoke() }, 500)
+                            }
+                        }
+                        override fun onPartialResults(partialResults: Bundle?) {
+                            val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                            if (!partial.isNullOrBlank()) livePartialText = partial
+                        }
+                        override fun onEvent(eventType: Int, params: Bundle?) {}
+                    })
+                    recognizer.startListening(intent)
                 }
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, langCode)
+            } catch (_: Exception) {
+                isListening = false
+                liveVoiceMode = false
             }
-            recognizer.setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) {
-                    isListening = true
-                    livePartialText = ""
-                }
-                override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsdB: Float) {}
-                override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() { isListening = false }
-                override fun onError(error: Int) {
-                    isListening = false
-                    if (liveModeRef.value && !isThinking && !isSpeaking) {
-                        mainHandler.postDelayed({ if (liveModeRef.value) startListeningCycle() }, 700)
-                    }
-                }
-                override fun onResults(results: Bundle?) {
-                    isListening = false
-                    val spoken = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-                    if (!spoken.isNullOrBlank()) {
-                        triggerSend(spoken)
-                    } else if (liveModeRef.value) {
-                        mainHandler.postDelayed({ if (liveModeRef.value) startListeningCycle() }, 500)
-                    }
-                }
-                override fun onPartialResults(partialResults: Bundle?) {
-                    val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-                    if (!partial.isNullOrBlank()) livePartialText = partial
-                }
-                override fun onEvent(eventType: Int, params: Bundle?) {}
-            })
-            recognizer.startListening(intent)
         }
     }
 
@@ -720,7 +751,7 @@ fun JarvisMastermindApp() {
                 liveVoiceMode = true
                 pendingLiveStart = false
             }
-            startListeningCycle()
+            startListeningAction?.invoke()
         } else {
             pendingLiveStart = false
             Toast.makeText(context, "Microphone permission required", Toast.LENGTH_SHORT).show()
@@ -738,7 +769,7 @@ fun JarvisMastermindApp() {
         ) == PackageManager.PERMISSION_GRANTED
         if (granted) {
             liveVoiceMode = enableLiveLoop
-            startListeningCycle()
+            startListeningAction?.invoke()
         } else {
             pendingLiveStart = enableLiveLoop
             micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -876,9 +907,6 @@ fun JarvisMastermindApp() {
         modifier = Modifier
             .fillMaxSize()
             .background(Brush.verticalGradient(listOf(Color(0xFF07132B), DeepSpace, Color(0xFF010308))))
-            .statusBarsPadding()
-            .navigationBarsPadding()
-            .imePadding()
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Pro HUD Top Header
@@ -1115,11 +1143,13 @@ fun JarvisMastermindApp() {
                                             modifier = Modifier
                                                 .size(16.dp)
                                                 .clickable {
-                                                    val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                                                        type = "text/plain"
-                                                        putExtra(Intent.EXTRA_TEXT, msg.text)
-                                                    }
-                                                    context.startActivity(Intent.createChooser(sendIntent, "Share JARVIS Reply"))
+                                                    try {
+                                                        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                                            type = "text/plain"
+                                                            putExtra(Intent.EXTRA_TEXT, msg.text)
+                                                        }
+                                                        context.startActivity(Intent.createChooser(sendIntent, "Share JARVIS Reply"))
+                                                    } catch (_: Exception) {}
                                                 }
                                         )
                                         Spacer(modifier = Modifier.width(12.dp))
