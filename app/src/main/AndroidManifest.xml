@@ -10,7 +10,7 @@
         android:roundIcon="@drawable/jarvis_icon"
         android:label="SANTALI JARVIS AI"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.Material.NoActionBar">
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
         <activity
             android:name=".MainActivity"
             android:exported="true">
