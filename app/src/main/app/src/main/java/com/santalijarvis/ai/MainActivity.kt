@@ -106,6 +106,15 @@ private val TextMuted = Color(0xFF94A3B8)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        Thread.setDefaultUncaughtExceptionHandler { _, throwable ->
+            val errText = android.util.Log.getStackTraceString(throwable)
+            val crashIntent = Intent(applicationContext, CrashActivity::class.java).apply {
+                putExtra("crash_log", errText)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            }
+            applicationContext.startActivity(crashIntent)
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme(
@@ -120,6 +129,23 @@ class MainActivity : ComponentActivity() {
                 JarvisMastermindApp()
             }
         }
+    }
+}
+
+class CrashActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val errText = intent.getStringExtra("crash_log") ?: "Unknown Error"
+        val tv = android.widget.TextView(this).apply {
+            text = "JARVIS ERROR REPORT (স্ক্রিনশট পাঠাও):\n\n$errText"
+            setTextColor(android.graphics.Color.WHITE)
+            setBackgroundColor(android.graphics.Color.parseColor("#7F1D1D"))
+            setPadding(36, 72, 36, 36)
+            textSize = 12f
+            setTextIsSelectable(true)
+        }
+        val scroll = android.widget.ScrollView(this).apply { addView(tv) }
+        setContentView(scroll)
     }
 }
 
